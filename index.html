@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三国志 · 网页版</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="app">
+  <header id="topbar">
+    <div class="brand">三国志</div>
+    <div class="date" id="tbDate">—</div>
+    <div class="factionTag" id="tbFaction">—</div>
+    <div class="spacer"></div>
+    <button class="btn" id="btnGenerals">武将一览</button>
+    <button class="btn" id="btnFactions">天下势力</button>
+    <button class="btn gold" id="btnSave">存档 / 读档</button>
+    <button class="btn" id="btnMenu">重新开局</button>
+  </header>
+
+  <main id="stage">
+    <section id="mapWrap">
+      <svg id="map" xmlns="http://www.w3.org/2000/svg" viewBox="-40 -30 1000 850" preserveAspectRatio="xMidYMid meet"></svg>
+      <div id="mapHint"></div>
+      <div id="logPanel">
+        <h4>编 年 史</h4>
+        <div id="logList"></div>
+      </div>
+    </section>
+    <aside id="side">
+      <div class="empty">点击地图上的城池<br>查看详情与下达指令</div>
+    </aside>
+  </main>
+
+  <footer id="bottombar"></footer>
+</div>
+
+<div id="modals"></div>
+<div id="toastWrap"></div>
+
+<script src="js/data.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/battle.js"></script>
+<script src="js/save.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
