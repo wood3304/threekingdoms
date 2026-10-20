@@ -298,7 +298,7 @@
       '<div style="flex:1;text-align:right"><div class="dim" style="font-size:12px">攻击目标</div>' +
       '<div style="font-size:16px;color:' + G.factions[to.owner].color + '">' + esc(to.name) + '　' + fmt(to.troops) + ' 兵</div></div>' +
       '</div>';
-    body += '<div class="secTitle">选择出阵武将（最多 3 名）</div><div class="pickList" id="pickList">';
+    body += '<div class="secTitle">选择出阵武将（最多 5 名）</div><div class="pickList" id="pickList">';
     gens.forEach(function (g) {
       body += '<div class="pick' + (picked.indexOf(g.id) >= 0 ? ' on' : '') + '" data-pick="' + g.id + '">' +
         esc(g.name) + ' <small>统' + g.lead + ' 武' + g.war + ' 智' + g.int + '｜上限' + fmt(SG.unitCap(g)) + '</small></div>';
@@ -309,7 +309,7 @@
     body += '<div style="display:flex;align-items:center;gap:12px">' +
       '<input type="range" id="troopRange" min="1000" max="1000" step="500" value="1000">' +
       '<b id="troopVal" class="gold" style="width:80px;text-align:right">0</b></div>';
-    body += '<div class="dim" style="font-size:12px;margin-top:6px">可用上限随所选武将带兵能力变化，出征后城池将扣除相应兵力。</div>';
+    body += '<div class="dim" id="troopHint" style="font-size:12px;margin-top:6px">可用上限随所选武将带兵能力变化，出征后城池将扣除相应兵力。</div>';
 
     body += '<div class="secTitle">守方情报</div>';
     body += '<div style="font-size:12.5px;color:#b9bcc4">' +
@@ -317,6 +317,7 @@
         ? defGens.map(function (g) { return esc(g.name) + '(统' + g.lead + ' 武' + g.war + ')'; }).join('、')
         : '无武将驻守') +
       '　｜　城防 <b class="gold">' + to.def + '</b>　训练 ' + to.training + '　士气 ' + to.morale + '</div>';
+    body += '<div class="dim" style="font-size:11.5px;margin-top:5px">守军会分营列阵（至少 3 支），依城而守；请谨慎选择出征兵力。</div>';
 
     var m = openModal({
       title: '出阵 · ' + esc(from.name) + ' ➜ ' + esc(to.name),
@@ -332,8 +333,19 @@
       var max = Math.min(from.troops, cap);
       var r = m.q('#troopRange');
       r.max = Math.max(1000, Math.floor(max / 500) * 500);
-      if (+r.value > +r.max) r.value = r.max;
+      /* 默认带上全部可出征兵力，避免玩家误带千人送死 */
+      if (!refresh._init) { r.value = r.max; refresh._init = true; }
+      else if (+r.value > +r.max) r.value = r.max;
       m.q('#troopVal').textContent = fmt(+r.value);
+      var hintEl = m.q('#troopHint');
+      var left = Math.max(0, from.troops - (+r.value));
+      if (left < 500) {
+        hintEl.textContent = '注意：城内将几乎没有守军（剩余 ' + fmt(left) + '），谨防敌军偷袭。';
+        hintEl.style.color = '#d1655a';
+      } else {
+        hintEl.textContent = '可用上限随所选武将带兵能力变化，出征后城池将扣除相应兵力。';
+        hintEl.style.color = '';
+      }
       m.qa('[data-pick]').forEach(function (el) {
         el.classList.toggle('on', picked.indexOf(el.dataset.pick) >= 0);
       });
@@ -346,7 +358,7 @@
         var i = picked.indexOf(id);
         if (i >= 0) { if (picked.length > 1) picked.splice(i, 1); }
         else {
-          if (picked.length >= 3) { UI.toast('最多选择 3 名武将', 'bad'); return; }
+          if (picked.length >= 5) { UI.toast('最多选择 5 名武将', 'bad'); return; }
           picked.push(id);
         }
         refresh();
@@ -360,13 +372,16 @@
         if (!req.ok) { UI.toast(req.msg, 'bad'); return; }
         m.close();
         UI._targets = null;
-        var report = SG.resolveBattle(req);
-        playBattle(req, report, function () {
-          SG.applyBattleResult(req, report);
-          SG.autosave();
-          UI.renderAll();
-          if (to.owner === G.player) UI.select(to.id);
-          checkEnd();
+        UI._mode = null;
+        SG.BattleUI.play(req, {
+          playerSide: 'atk',
+          onFinish: function (report) {
+            SG.applyBattleResult(req, report);
+            SG.autosave();
+            UI.renderAll();
+            if (to.owner === G.player) UI.select(to.id);
+            checkEnd();
+          }
         });
       }
     });
@@ -377,112 +392,9 @@
     refresh();
   }
 
-  /* ---------- 战斗演出 ---------- */
-  function sideHTML(title, color, units, totalN) {
-    var h = '<div class="bside">';
-    h += '<div class="bh"><span style="width:4px;height:20px;background:' + color + ';display:inline-block"></span>' +
-      '<span>' + esc(title) + '</span><span class="tot">' + fmt(totalN) + '</span></div>';
-    units.forEach(function (u) {
-      var pct = Math.max(0, Math.min(100, u.troops / u.cap * 100));
-      h += '<div class="bunit' + (u.troops <= 0 ? ' dead' : '') + '">' +
-        '<span class="bn">' + esc(u.name) + '</span>' +
-        '<span class="bbar"><i style="width:' + pct.toFixed(1) + '%"></i></span>' +
-        '<span class="bt">' + fmt(u.troops) + '</span>' +
-        '<span class="bcap">/' + fmt(u.cap) + '</span>' +
-        '</div>';
-    });
-    h += '</div>';
-    return h;
-  }
-
-  function playBattle(req, report, done) {
-    var G = SG.G;
-    var af = G.factions[req.atk.fid], df = G.factions[req.def.fid];
-    var steps = [{
-      no: 0,
-      atkTotal: report.initial.atkTotal,
-      defTotal: report.initial.defTotal,
-      atkUnits: report.initial.atkUnits,
-      defUnits: report.initial.defUnits,
-      log: ['两军对垒于「' + esc(req.def.cityName) + '」城下。']
-    }].concat(report.rounds);
-
-    var body = '<div class="bfield">' +
-      '<div id="bsA" style="flex:1"></div>' +
-      '<div id="bsD" style="flex:1"></div>' +
-      '</div>' +
-      '<div class="battleLog" id="bLog"></div>' +
-      '<div id="bVerdict"></div>';
-
-    var m = openModal({
-      title: '合战 · ' + esc(req.atk.cityName) + ' 攻 ' + esc(req.def.cityName),
-      cls: 'battleBox',
-      noClose: true,
-      body: body,
-      foot: '<button class="btn" data-x="skip">直接看结果</button>' +
-        '<button class="btn gold" data-x="next">下一回合</button>' +
-        '<button class="btn primary" data-x="auto">自动播放</button>'
-    });
-
-    var idx = 0, timer = null;
-
-    function draw() {
-      var s = steps[idx];
-      m.q('#bsA').innerHTML = sideHTML(af.name + '（攻）', af.color, s.atkUnits, s.atkTotal);
-      m.q('#bsD').innerHTML = sideHTML(df.name + '（守）', df.color, s.defUnits, s.defTotal);
-      var log = m.q('#bLog');
-      if (idx > 0) {
-        log.innerHTML = '<div class="r">— 第 ' + s.no + ' 回合 —</div>' +
-          s.log.map(function (l) { return '<div class="l">' + l + '</div>'; }).join('') + log.innerHTML;
-      } else {
-        log.innerHTML = '<div class="r">— 布阵 —</div>' +
-          s.log.map(function (l) { return '<div class="l">' + l + '</div>'; }).join('');
-      }
-      log.scrollTop = 0;
-      if (idx >= steps.length - 1) finish();
-    }
-
-    function stop() { if (timer) { clearInterval(timer); timer = null; } }
-
-    function finish() {
-      stop();
-      var win = report.winner === 'atk';
-      m.q('#bVerdict').innerHTML =
-        '<div class="verdict ' + (win ? 'win' : 'lose') + '">' +
-        (win ? '☆ 攻方胜利 · ' + esc(req.def.cityName) + ' 陷落 ☆' : '攻方败退 · ' + esc(report.reason)) +
-        '</div>';
-      m.qa('[data-x]').forEach(function (b) { b.disabled = true; });
-      m.q('[data-x="next"]').textContent = '确　定';
-      m.q('[data-x="next"]').disabled = false;
-      m.q('[data-x="next"]').dataset.x = 'done';
-    }
-
-    m.mask.addEventListener('click', function (e) {
-      var b = e.target.closest('[data-x]');
-      if (!b || b.disabled) return;
-      var k = b.dataset.x;
-      if (k === 'next') { stop(); if (idx < steps.length - 1) { idx++; draw(); } }
-      else if (k === 'auto') {
-        if (timer) { stop(); b.textContent = '自动播放'; }
-        else {
-          b.textContent = '暂停';
-          timer = setInterval(function () {
-            if (idx < steps.length - 1) { idx++; draw(); }
-            else stop();
-          }, 620);
-        }
-      } else if (k === 'skip') {
-        stop();
-        while (idx < steps.length - 1) idx++;
-        draw();
-      } else if (k === 'done') {
-        stop(); m.close(); done && done();
-      }
-    });
-
-    draw();
-  }
-  UI.playBattle = playBattle;
+  /* ---------- 战斗演出 ----------
+   * 战场绘制与操作见 js/battle-ui.js（SG.BattleUI.play）
+   * ------------------------------------------ */
 
   /* ---------- 武将详情 ---------- */
   function openGeneral(gid) {
@@ -814,20 +726,44 @@
   /* ---------- 结束回合 ---------- */
   function doEndTurn() {
     var G = SG.G;
-    if (!G || G.over) return;
+    if (!G || G.over || UI._turnBusy) return;
+    UI._turnBusy = true;
+
     var before = SG.factionCities(G.player).length;
-    var r = SG.endTurn();
-    SG.autosave();
-    UI._mode = null; UI._targets = null;
-    UI.renderAll();
-    if (r && r.summary) {
-      var s = r.summary;
-      UI.toast('月结算：金 ' + (s.gold >= 0 ? '+' : '') + fmt(s.gold) +
-        '　粮 ' + (s.food - s.upkeep >= 0 ? '+' : '') + fmt(s.food - s.upkeep), 'good');
+
+    function finishTurn(r) {
+      UI._turnBusy = false;
+      SG.autosave();
+      UI._mode = null;
+      UI._targets = null;
+      UI.renderAll();
+      if (r && r.summary) {
+        var s = r.summary;
+        UI.toast('月结算：金 ' + (s.gold >= 0 ? '+' : '') + fmt(s.gold) +
+          '　粮 ' + (s.food - s.upkeep >= 0 ? '+' : '') + fmt(s.food - s.upkeep), 'good');
+      }
+      var after = SG.factionCities(G.player).length;
+      if (after < before) UI.toast('告急！我方有城池失守！', 'bad');
+      if (G.over) checkEnd();
     }
-    var after = SG.factionCities(G.player).length;
-    if (after < before) UI.toast('告急！我方有城池失守！', 'bad');
-    if (G.over) checkEnd();
+
+    SG.endTurn({
+      /* 敌军来犯且目标是我方城池：玩家亲自守城 */
+      onDefense: function (req, resume) {
+        UI.renderAll();
+        UI.toast('敌军来袭：' + req.atk.cityName + ' 攻 ' + req.def.cityName, 'bad');
+        SG.BattleUI.play(req, {
+          playerSide: 'def',
+          onFinish: function (report) {
+            SG.applyBattleResult(req, report);
+            SG.autosave();
+            UI.renderAll();
+            resume();
+          }
+        });
+      },
+      done: finishTurn
+    });
   }
   UI.endTurn = doEndTurn;
 

@@ -363,20 +363,31 @@
           troops: 0, morale: to.morale, training: to.training
         };
       });
+
+    /* 孤城也要分营列阵：守军至少分成 3 支（与攻方相当，最多 5 支），
+       避免 1-2 名守将把数万守军堆成一支难以击破的孤军 */
+    var wantDef = Math.min(5, Math.max(3, units.length));
+    var guardNames = ['守备兵', '城防兵', '郡国兵'];
+    var guardIdx = 0;
+    while (defUnits.length < wantDef) {
+      defUnits.push({
+        gid: null, name: guardNames[guardIdx++ % guardNames.length],
+        lead: 52, war: 52, int: 40,
+        troops: 0, morale: to.morale, training: to.training
+      });
+    }
+
     /* 守军按带兵上限分摊守城兵力 */
     var totalCap = 0;
-    defUnits.forEach(function (u) { totalCap += 1000 + u.lead * 80; });
+    defUnits.forEach(function (u) { totalCap += SG.unitCap(u); });
     if (defUnits.length) {
       var l2 = to.troops;
       defUnits.forEach(function (u, i) {
-        var cap = 1000 + u.lead * 80;
-        var t = (i === defUnits.length - 1) ? l2 : Math.round(to.troops * cap / totalCap);
+        var t = (i === defUnits.length - 1) ? l2 : Math.round(to.troops * SG.unitCap(u) / totalCap);
         t = Math.min(t, l2);
         l2 -= t;
         u.troops = t;
       });
-    } else {
-      defUnits.push({ gid: null, name: '守备兵', lead: 50, war: 50, int: 50, troops: to.troops, morale: to.morale, training: to.training });
     }
 
     return {
@@ -394,15 +405,19 @@
     var af = G.factions[req.atk.fid];
     var df = G.factions[req.def.fid];
 
-    /* 扣除出征兵力 */
-    var sent = 0;
-    req.atk.units.forEach(function (u) { sent += u.troops; });
-    from.troops -= sent;
+    /* 出征兵力以战前快照为准（req 中的部队已被结算为战后兵力） */
+    var sent = (report && report.initial && report.initial.atkTotal != null)
+      ? report.initial.atkTotal
+      : req.atk.units.reduce(function (n, u) { return n + (u.troops || 0); }, 0);
+    var survivors = (report && report.atkLeft != null)
+      ? report.atkLeft
+      : sent;
+    sent = Math.max(0, Math.round(sent));
+    survivors = Math.max(0, Math.round(survivors));
+
+    from.troops = Math.max(0, from.troops - sent);
     from.ap -= 1;
     from.morale = clamp(from.morale - 5, 0, 100);
-
-    var survivors = 0;
-    req.atk.units.forEach(function (u) { survivors += u.troops; });
 
     var text = '';
     if (report.winner === 'atk') {
@@ -467,7 +482,7 @@
       }
     } else {
       /* 攻方失败 */
-      to.troops = report.defLeft;
+      to.troops = Math.max(0, Math.round(report.defLeft == null ? 0 : report.defLeft));
       to.morale = clamp(to.morale - 8, 0, 100);
       /* 幸存攻军退回本城 */
       from.troops += survivors;
@@ -506,92 +521,146 @@
   }
 
   /* ---------- AI ---------- */
-  function aiFaction(f) {
+  /* 单座城池的 AI 行动；若目标是玩家城池，则返回战斗请求交由玩家守城 */
+  function aiCityTurn(f, c) {
     var G = SG.G;
-    var cities = shuffle(SG.factionCities(f.id).slice());
+    if (!c || c.owner !== f.id || c.ap <= 0) return null;
 
-    cities.forEach(function (c) {
-      if (c.ap <= 0 || c.owner !== f.id) return;
-
-      /* 1) 判断是否出击 */
-      var targets = SG.attackTargets(c.id).filter(function (t) {
-        return c.troops > t.troops * 1.6 && c.troops > 9000;
-      });
-      if (targets.length && c.troops >= 12000 && Math.random() < 0.75) {
-        targets.sort(function (a, b) { return a.troops - b.troops; });
-        var t = targets[0];
-        var gens = SG.sortedGenerals(f.id, 'lead').filter(function (g) { return g.city === c.id; }).slice(0, 3);
-        if (gens.length) {
-          var send = Math.floor(c.troops * (t.troops < c.troops * 0.6 ? 0.7 : 0.9));
-          var req = SG.prepareAttack(c.id, t.id, gens.map(function (g) { return g.id; }), send);
-          if (req.ok) {
-            var rep = SG.resolveBattle(req);
-            SG.applyBattleResult(req, rep);
-            return;
-          }
-        }
-      }
-
-      /* 2) 内政 */
-      while (c.ap > 0) {
-        var act = null;
-        if (c.troops < 6000 && f.gold > 900 && f.food > 6000) act = 'draft';
-        else if (c.order < 45) act = 'patrol';
-        else if (c.agri < 55 && f.gold > 800) act = 'farm';
-        else if (c.comm < 55 && f.gold > 800) act = 'develop';
-        else if (c.def < 50 && f.gold > 900) act = 'fortify';
-        else if (c.training < 70 && f.gold > 900) act = 'train';
-        else if (f.gold > 3000 && Math.random() < 0.3) act = 'levy';
-        else {
-          var pool = ['develop', 'farm', 'patrol', 'fortify', 'train'];
-          act = pool[rnd(0, pool.length - 1)];
-        }
-        var r = SG.doAction(c.id, act, { amount: 3000 });
-        if (!r.ok) break;
-      }
-
-      /* 3) 登用在野 */
-      var wild = c.generals.map(function (id) { return G.generals[id]; })
-        .filter(function (g) { return g && g.faction === null; });
-      if (wild.length && f.gold > 1200 && Math.random() < 0.6) {
-        SG.doAction(c.id, 'recruit');
-      }
+    /* 1) 判断是否出击 */
+    var targets = SG.attackTargets(c.id).filter(function (t) {
+      return c.troops > t.troops * 1.6 && c.troops > 9000;
     });
+    if (targets.length && c.troops >= 12000 && Math.random() < 0.75) {
+      targets.sort(function (a, b) { return a.troops - b.troops; });
+      var t = targets[0];
+      var gens = SG.sortedGenerals(f.id, 'lead').filter(function (g) { return g.city === c.id; }).slice(0, 3);
+      if (gens.length) {
+        var send = Math.floor(c.troops * (t.troops < c.troops * 0.6 ? 0.7 : 0.9));
+        var req = SG.prepareAttack(c.id, t.id, gens.map(function (g) { return g.id; }), send);
+        if (req.ok) {
+          if (req.def.fid === G.player) return req;
+          var rep = SG.resolveBattle(req);
+          SG.applyBattleResult(req, rep);
+          return null;
+        }
+      }
+    }
+
+    /* 2) 内政 */
+    while (c.ap > 0) {
+      var act = null;
+      if (c.troops < 6000 && f.gold > 900 && f.food > 6000) act = 'draft';
+      else if (c.order < 45) act = 'patrol';
+      else if (c.agri < 55 && f.gold > 800) act = 'farm';
+      else if (c.comm < 55 && f.gold > 800) act = 'develop';
+      else if (c.def < 50 && f.gold > 900) act = 'fortify';
+      else if (c.training < 70 && f.gold > 900) act = 'train';
+      else if (f.gold > 3000 && Math.random() < 0.3) act = 'levy';
+      else {
+        var pool = ['develop', 'farm', 'patrol', 'fortify', 'train'];
+        act = pool[rnd(0, pool.length - 1)];
+      }
+      var r = SG.doAction(c.id, act, { amount: 3000 });
+      if (!r.ok) break;
+    }
+
+    /* 3) 登用在野 */
+    var wild = c.generals.map(function (id) { return G.generals[id]; })
+      .filter(function (g) { return g && g.faction === null; });
+    if (wild.length && f.gold > 1200 && Math.random() < 0.6) {
+      SG.doAction(c.id, 'recruit');
+    }
+    return null;
   }
 
-  /* ---------- 回合推进 ---------- */
-  SG.endTurn = function () {
+  /* ---------- 回合推进 ----------
+   * hooks.onDefense(req, resume) : 玩家守城时暂停，演出结束后调用 resume()
+   * hooks.done(result)           : 本月全部结算完毕
+   */
+  SG.endTurn = function (hooks) {
+    hooks = hooks || {};
     var G = SG.G;
-    if (G.over) return { ok: false, over: true };
+    if (G.over) {
+      if (hooks.done) hooks.done({ ok: false, over: true });
+      return { ok: false, over: true };
+    }
 
-    var pf = G.factions[G.player];
     var summary = [];
+    var finished = false;
 
-    /* AI 行动 */
+    /* AI 逐城行动队列，遇到玩家守城时暂停 */
+    var tasks = [];
     Object.keys(G.factions).forEach(function (fid) {
       var f = G.factions[fid];
       if (!f.alive || f.isPlayer) return;
-      aiFaction(f);
+      tasks.push({ f: f, cities: shuffle(SG.factionCities(fid).slice()), i: 0 });
     });
 
-    /* 全场结算 */
-    Object.keys(G.factions).forEach(function (fid) {
-      var f = G.factions[fid];
-      if (!f.alive) return;
-      var r = settleFaction(f);
-      if (f.isPlayer) summary.push(r);
-      if (r.starve) SG.log('【' + f.name + '】粮草断绝，军心浮动！', 'bad');
-    });
+    function finish() {
+      if (finished) return;
+      finished = true;
 
-    /* 月份推进 */
-    G.month += 1;
-    G.turn += 1;
-    if (G.month > 12) { G.month = 1; G.year += 1; }
-    SG.refreshCityAP();
+      /* 全场结算 */
+      Object.keys(G.factions).forEach(function (fid) {
+        var f = G.factions[fid];
+        if (!f.alive) return;
+        var r = settleFaction(f);
+        if (f.isPlayer) summary.push(r);
+        if (r.starve) SG.log('【' + f.name + '】粮草断绝，军心浮动！', 'bad');
+      });
 
-    /* 胜负判定 */
-    SG.checkEnd();
-    return { ok: true, summary: summary[0] || { gold: 0, food: 0, upkeep: 0 } };
+      /* 月份推进 */
+      G.month += 1;
+      G.turn += 1;
+      if (G.month > 12) { G.month = 1; G.year += 1; }
+      SG.refreshCityAP();
+
+      /* 胜负判定 */
+      SG.checkEnd();
+
+      if (hooks.done) {
+        hooks.done({ ok: true, summary: summary[0] || { gold: 0, food: 0, upkeep: 0 } });
+      }
+    }
+
+    function playerWiped() {
+      return SG.factionCities(G.player).length === 0;
+    }
+
+    function run() {
+      if (finished) return;
+
+      while (tasks.length) {
+        var task = tasks[0];
+        if (!task.f.alive) { tasks.shift(); continue; }
+        if (task.i >= task.cities.length) { tasks.shift(); continue; }
+
+        var c = task.cities[task.i++];
+        var pending = aiCityTurn(task.f, c);
+
+        if (pending) {
+          if (hooks.onDefense) {
+            var resumed = false;
+            hooks.onDefense(pending, function () {
+              if (resumed || finished) return;
+              resumed = true;
+              if (playerWiped()) { finish(); return; }
+              run();
+            });
+            return;
+          }
+          var rep = SG.resolveBattle(pending);
+          SG.applyBattleResult(pending, rep);
+          if (playerWiped()) { finish(); return; }
+        }
+
+        if (playerWiped()) { finish(); return; }
+      }
+      finish();
+    }
+
+    run();
+    return { ok: true, async: true };
   };
 
   SG.checkEnd = function () {
