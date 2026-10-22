@@ -150,6 +150,17 @@
     });
 
     SG.refreshCityAP();
+
+    /* 开局默认选中我方都城，让玩家一眼看到自己在哪里 */
+    var pf = SG.faction(playerFactionId);
+    if (pf) {
+      G.sel = (pf.capital && G.cities[pf.capital]) ? pf.capital : null;
+      if (!G.sel) {
+        var own = SG.factionCities(playerFactionId);
+        if (own.length) G.sel = own[0].id;
+      }
+    }
+
     SG.log('群雄并起，天下大乱。' + SG.faction(playerFactionId).name + '势力就此起兵！', 'imp');
     return G;
   };

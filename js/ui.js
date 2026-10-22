@@ -257,9 +257,24 @@
     $('logList').innerHTML = h;
   }
 
+  /* 没有选中城池时（新开局或旧存档），默认落在本方都城 */
+  function ensureSelection() {
+    var G = SG.G;
+    if (!G) return;
+    if (G.sel && G.cities[G.sel]) return;
+    var pf = G.factions[G.player];
+    if (pf && pf.capital && G.cities[pf.capital] && G.cities[pf.capital].owner === G.player) {
+      G.sel = pf.capital;
+      return;
+    }
+    var own = SG.factionCities(G.player);
+    if (own.length) G.sel = own[0].id;
+  }
+
   UI.renderAll = function () {
     if (!SG.G) return;
     document.body.classList.remove('inMenu');
+    ensureSelection();
     renderTop(); renderMap(); renderSide(); renderBottom(); renderLog();
   };
 
@@ -556,7 +571,9 @@
         SG.newGame(sel);
         SG.autosave();
         UI.renderAll();
-        UI.toast('已选择 ' + SG.faction(sel).name + ' 势力，开始征战！', 'good');
+        var cap = (SG.G.sel && SG.G.cities[SG.G.sel]) ? SG.G.cities[SG.G.sel].name : '';
+        UI.toast('已选择 ' + SG.faction(sel).name + ' 势力' +
+          (cap ? '，都城「' + cap + '」' : '') + '，开始征战！', 'good');
       } else if (k === 'cont') {
         var G = SG.loadAutosave();
         if (!G) { UI.toast('自动存档已损坏', 'bad'); return; }
